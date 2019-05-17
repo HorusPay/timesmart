@@ -44,22 +44,21 @@ struct eosio_assert_message_is_log {
 
 
 struct project {
-   name                     name;
-   bool                     need_approval;
-   optional<extended_asset> hourly_rate;
-   optional<extended_asset> balance;
+   name           name;
+   extended_asset hourly_rate;
+   extended_asset balance;
 };
-FC_REFLECT( project, (name)(need_approval)(hourly_rate)(balance));
+FC_REFLECT( project, (name)(hourly_rate)(balance));
 
 struct project_user {
-   uint64_t          id;
-   name              project;
-   name              user;
-   int64_t           approved;
-   int64_t           pending;
-   block_timestamp_type   last_clock;
+   uint64_t             id;
+   name                 project;
+   name                 user;
+   int64_t              pending;
+   extended_asset       hourly_rate;
+   block_timestamp_type last_clock;
 };
-FC_REFLECT( project_user, (id)(project)(user)(approved)(pending)(last_clock));
+FC_REFLECT( project_user, (id)(project)(user)(pending)(hourly_rate)(last_clock));
 
 struct project_manager {
    uint64_t id;
@@ -158,8 +157,8 @@ struct horuspay_tester : eosio_system_tester {
       return my_push_action(std::move(act), signer);
    }
 
-   action_result create(account_name project, account_name owner, optional<extended_asset> hourly_rate) {
-      return call(owner, N(create),mvo()
+   action_result create(account_name project, account_name owner, extended_asset hourly_rate) {
+      return call(ME, N(create),mvo()
          ("project",     project)
          ("owner",       owner)
          ("hourly_rate", hourly_rate)
@@ -213,29 +212,49 @@ struct horuspay_tester : eosio_system_tester {
       );
    }
 
-   action_result addtime(account_name project, account_name user, uint64_t hours, optional<string> description) {
+   action_result addtime(account_name project, account_name user, uint64_t seconds, optional<string> description, optional<account_name> manager) {
       return call(user, N(addtime), mvo()
          ("project",     project)
          ("user",        user)
-         ("hours",       hours)
+         ("seconds",     seconds)
          ("description", description)
+         ("manager",     manager)
       );
    }
 
-   action_result approve(account_name project, account_name manager, account_name user, optional<int64_t> hours) {
+   action_result approve(account_name project, account_name manager, account_name user, optional<int64_t> seconds) {
       return call(manager, N(approve), mvo()
          ("project",     project)
          ("manager",     manager)
          ("user",        user)
-         ("hours",       hours)
+         ("seconds",       seconds)
       );
    }
 
-   action_result claim(account_name project, account_name user, optional<int64_t> hours) {
-      return call(user, N(claim), mvo()
+   action_result decline(account_name project, account_name manager, account_name user, int64_t seconds) {
+      return call(manager, N(decline), mvo()
          ("project",     project)
+         ("manager",     manager)
          ("user",        user)
-         ("hours",       hours)
+         ("seconds",       seconds)
+      );
+   }
+
+   action_result setuserrate(account_name project, account_name manager, account_name user, extended_asset hourly_rate) {
+      return call(manager, N(setuserrate), mvo()
+         ("project",     project)
+         ("manager",     manager)
+         ("user",        user)
+         ("hourly_rate", hourly_rate)
+      );
+   }
+
+   action_result setprjrate(account_name project, account_name manager, account_name user, extended_asset hourly_rate) {
+      return call(manager, N(setuserrate), mvo()
+         ("project",     project)
+         ("manager",     manager)
+         ("user",        user)
+         ("hourly_rate", hourly_rate)
       );
    }
 
@@ -325,16 +344,13 @@ BOOST_FIXTURE_TEST_CASE( test_all, horuspay_tester ) try {
    BOOST_REQUIRE(!!prj);
 
    BOOST_REQUIRE_EQUAL(prj->name, N(proj1));
-   BOOST_REQUIRE_EQUAL(prj->need_approval, true);
-   BOOST_REQUIRE_EQUAL(prj->hourly_rate->quantity, asset::from_string("10.0000 USD"));
-   BOOST_REQUIRE_EQUAL(prj->hourly_rate->contract, N(eosio.token));
-   BOOST_REQUIRE_EQUAL(prj->balance->quantity, asset::from_string("0.0000 USD"));
-   BOOST_REQUIRE_EQUAL(prj->balance->contract, N(eosio.token));
-
-
+   BOOST_REQUIRE_EQUAL(prj->hourly_rate.quantity, asset::from_string("10.0000 USD"));
+   BOOST_REQUIRE_EQUAL(prj->hourly_rate.contract, N(eosio.token));
+   BOOST_REQUIRE_EQUAL(prj->balance.quantity, asset::from_string("0.0000 USD"));
+   BOOST_REQUIRE_EQUAL(prj->balance.contract, N(eosio.token));
 
    // Add user
-   BOOST_REQUIRE_EQUAL( wasm_assert_msg("only project manager can add users")
+   BOOST_REQUIRE_EQUAL( wasm_assert_msg("project not found")
       , adduser(N(xxx), N(own1), N(own1)));
 
    BOOST_REQUIRE_EQUAL( wasm_assert_msg("only project manager can add users")
@@ -426,7 +442,6 @@ BOOST_FIXTURE_TEST_CASE( test_all, horuspay_tester ) try {
    BOOST_REQUIRE_EQUAL(prjusr->id,0);
    BOOST_REQUIRE_EQUAL(prjusr->project,N(proj1));
    BOOST_REQUIRE_EQUAL(prjusr->user,N(user1));
-   BOOST_REQUIRE_EQUAL(prjusr->approved,0);
    BOOST_REQUIRE_EQUAL(prjusr->pending,0);
    BOOST_REQUIRE_EQUAL(prjusr->last_clock.slot, block_timestamp_type(control->head_block_time()).slot);
    
@@ -444,7 +459,6 @@ BOOST_FIXTURE_TEST_CASE( test_all, horuspay_tester ) try {
    BOOST_REQUIRE_EQUAL(prjusr->id,0);
    BOOST_REQUIRE_EQUAL(prjusr->project,N(proj1));
    BOOST_REQUIRE_EQUAL(prjusr->user,N(user1));
-   BOOST_REQUIRE_EQUAL(prjusr->approved,0);
    BOOST_REQUIRE_EQUAL(prjusr->pending, 2*60*60);
    BOOST_REQUIRE_EQUAL(prjusr->last_clock.slot, 0);
 
@@ -465,94 +479,34 @@ BOOST_FIXTURE_TEST_CASE( test_all, horuspay_tester ) try {
    BOOST_REQUIRE_EQUAL(prjusr->id,0);
    BOOST_REQUIRE_EQUAL(prjusr->project,N(proj1));
    BOOST_REQUIRE_EQUAL(prjusr->user,N(user1));
-   BOOST_REQUIRE_EQUAL(prjusr->approved,0);
    BOOST_REQUIRE_EQUAL(prjusr->pending, 5*60*60);
    BOOST_REQUIRE_EQUAL(prjusr->last_clock.slot, 0);
 
    // Add hours
-   BOOST_REQUIRE_EQUAL( wasm_assert_msg("hours must be positive")
-      , addtime(N(proj1), N(user1), 0, {}));
+   BOOST_REQUIRE_EQUAL( wasm_assert_msg("seconds must be positive")
+      , addtime(N(proj1), N(user1), 0, {}, {}));
 
    BOOST_REQUIRE_EQUAL( wasm_assert_msg("the user is not a member of the project")
-      , addtime(N(proj1), N(user3), 2, {}));
+      , addtime(N(proj1), N(user3), 2, {}, {}));
 
    BOOST_REQUIRE_EQUAL( success()
-      , addtime(N(proj1), N(user1), 1, "work on xxx"));
+      , addtime(N(proj1), N(user1), 1*3600, "work on xxx", {}));
 
    BOOST_REQUIRE_EQUAL( success()
-      , addtime(N(proj1), N(user1), 6, "work on yyy"));
+      , addtime(N(proj1), N(user1), 6*3600, "work on yyy", {}));
 
    prjusr = get_project_user(uint64_t(0));
    BOOST_REQUIRE(!!prjusr);
    BOOST_REQUIRE_EQUAL(prjusr->id,0);
    BOOST_REQUIRE_EQUAL(prjusr->project,N(proj1));
    BOOST_REQUIRE_EQUAL(prjusr->user,N(user1));
-   BOOST_REQUIRE_EQUAL(prjusr->approved,0);
    BOOST_REQUIRE_EQUAL(prjusr->pending, (5+7)*60*60);
    BOOST_REQUIRE_EQUAL(prjusr->last_clock.slot, 0);
 
-   // Approve & claim
-   BOOST_REQUIRE_EQUAL( wasm_assert_msg("only managers can approve hours")
-   , approve(N(proj1), N(user1), N(user1),{}));
-
-   BOOST_REQUIRE_EQUAL( wasm_assert_msg("only managers can approve hours")
-   , approve(N(proj1), N(mgr2), N(user1),{}));
-
-   BOOST_REQUIRE_EQUAL( success()
-   , approve(N(proj1), N(mgr1), N(user1),1));
-
-   prjusr = get_project_user(uint64_t(0));
-   BOOST_REQUIRE(!!prjusr);
-   BOOST_REQUIRE_EQUAL(prjusr->id,0);
-   BOOST_REQUIRE_EQUAL(prjusr->project,N(proj1));
-   BOOST_REQUIRE_EQUAL(prjusr->user,N(user1));
-   BOOST_REQUIRE_EQUAL(prjusr->approved,(1)*60*60);
-   BOOST_REQUIRE_EQUAL(prjusr->pending, (5+7-1)*60*60);
-   BOOST_REQUIRE_EQUAL(prjusr->last_clock.slot, 0);
-
-   BOOST_REQUIRE_EQUAL( wasm_assert_msg("the user is not a member of the project")
-   , approve(N(proj1), N(mgr1), N(user3),0));
-
-   BOOST_REQUIRE_EQUAL( wasm_assert_msg("0 < approve <= pending")
-   , approve(N(proj1), N(mgr1), N(user1),0));
-
-   BOOST_REQUIRE_EQUAL( success()
-   , approve(N(proj1), N(mgr1), N(user1), {}));
-
-   prjusr = get_project_user(uint64_t(0));
-   BOOST_REQUIRE(!!prjusr);
-   BOOST_REQUIRE_EQUAL(prjusr->id,0);
-   BOOST_REQUIRE_EQUAL(prjusr->project,N(proj1));
-   BOOST_REQUIRE_EQUAL(prjusr->user,N(user1));
-   BOOST_REQUIRE_EQUAL(prjusr->approved,(5+7)*60*60);
-   BOOST_REQUIRE_EQUAL(prjusr->pending, 0);
-   BOOST_REQUIRE_EQUAL(prjusr->last_clock.slot, 0);
-
-   // Claim prj2
-   BOOST_REQUIRE_EQUAL( success()
-      , create(N(proj2), N(own2), {}));
-
-   BOOST_REQUIRE_EQUAL( wasm_assert_msg("unable to claim")
-      , claim(N(proj2), N(user1), {}) );
-
-   // Claim prj1
-   BOOST_REQUIRE_EQUAL( wasm_assert_msg("0 < claim <= approved")
-      , claim(N(proj1), N(user1), 0));
-
-   BOOST_REQUIRE_EQUAL( wasm_assert_msg("0 < claim <= approved")
-      , claim(N(proj1), N(user1), -1));
-
-   BOOST_REQUIRE_EQUAL( wasm_assert_msg("claim project not found")
-      , claim(N(proj5), N(user1), {}));
-
-   BOOST_REQUIRE_EQUAL( wasm_assert_msg("the user is not a member of the project")
-      , claim(N(proj1), N(user3), {}));
-
-   BOOST_REQUIRE_EQUAL( wasm_assert_msg("not enough funds")
-      , claim(N(proj1), N(user1), 1));
-
+   //Issue USD / ARS
    issue(name("mgr1"), asset::from_string("300.0000 USD"));
    issue(name("mgr1"), asset::from_string("300.0000 ARS"));
+
    //Issue "fake" USD
    base_tester::push_action( N(faketoken), N(issue), system_account_name, mutable_variant_object()
                               ("to",      name("mgr1") )
@@ -564,50 +518,6 @@ BOOST_FIXTURE_TEST_CASE( test_all, horuspay_tester ) try {
    BOOST_REQUIRE_EXCEPTION( transfer_with_memo( name("mgr1"), ME, asset::from_string("10.0000 USD"), "noproj" ),
          eosio_assert_message_exception, eosio_assert_message_is( "transfer project not found" ) );
 
-   prj = get_project(N(proj1));
-   BOOST_REQUIRE(!!prj);
-   BOOST_REQUIRE_EQUAL(prj->name, N(proj1));
-   BOOST_REQUIRE_EQUAL(prj->need_approval, true);
-   BOOST_REQUIRE_EQUAL(prj->hourly_rate->quantity, asset::from_string("10.0000 USD"));
-   BOOST_REQUIRE_EQUAL(prj->hourly_rate->contract, N(eosio.token));
-   BOOST_REQUIRE_EQUAL(prj->balance->quantity, asset::from_string("0.0000 USD"));
-   BOOST_REQUIRE_EQUAL(prj->balance->contract, N(eosio.token));
-
-   transfer_with_memo( name("mgr1"), ME, asset::from_string("10.0000 USD"), "proj1" );
-
-   prj = get_project(N(proj1));
-   BOOST_REQUIRE(!!prj);
-   BOOST_REQUIRE_EQUAL(prj->name, N(proj1));
-   BOOST_REQUIRE_EQUAL(prj->need_approval, true);
-   BOOST_REQUIRE_EQUAL(prj->hourly_rate->quantity, asset::from_string("10.0000 USD"));
-   BOOST_REQUIRE_EQUAL(prj->hourly_rate->contract, N(eosio.token));
-   BOOST_REQUIRE_EQUAL(prj->balance->quantity, asset::from_string("10.0000 USD"));
-   BOOST_REQUIRE_EQUAL(prj->balance->contract, N(eosio.token));
-
-   BOOST_REQUIRE_EQUAL( wasm_assert_msg("not enough funds")
-      , claim(N(proj1), N(user1), 2));
-
-   BOOST_REQUIRE_EQUAL( success()
-     , claim(N(proj1), N(user1), 1));
-
-   prjusr = get_project_user(uint64_t(0));
-   BOOST_REQUIRE(!!prjusr);
-   BOOST_REQUIRE_EQUAL(prjusr->id,0);
-   BOOST_REQUIRE_EQUAL(prjusr->project,N(proj1));
-   BOOST_REQUIRE_EQUAL(prjusr->user,N(user1));
-   BOOST_REQUIRE_EQUAL(prjusr->approved,(5+7-1)*60*60);
-   BOOST_REQUIRE_EQUAL(prjusr->pending, 0);
-   BOOST_REQUIRE_EQUAL(prjusr->last_clock.slot, 0);
-
-   prj = get_project(N(proj1));
-   BOOST_REQUIRE(!!prj);
-   BOOST_REQUIRE_EQUAL(prj->name, N(proj1));
-   BOOST_REQUIRE_EQUAL(prj->need_approval, true);
-   BOOST_REQUIRE_EQUAL(prj->hourly_rate->quantity, asset::from_string("10.0000 USD"));
-   BOOST_REQUIRE_EQUAL(prj->hourly_rate->contract, N(eosio.token));
-   BOOST_REQUIRE_EQUAL(prj->balance->quantity, asset::from_string("0.0000 USD"));
-   BOOST_REQUIRE_EQUAL(prj->balance->contract, N(eosio.token));
-
    BOOST_REQUIRE_EXCEPTION( transfer_with_memo( name("mgr2"), ME, asset::from_string("10.0000 USD"), "proj1" ),
          eosio_assert_message_exception, eosio_assert_message_is( "only project managers can deposit" ) );
 
@@ -617,40 +527,129 @@ BOOST_FIXTURE_TEST_CASE( test_all, horuspay_tester ) try {
    BOOST_REQUIRE_EXCEPTION( transfer_with_memo( name("mgr1"), ME, asset::from_string("10.0000 USD"), "proj1", name("faketoken") ),
          eosio_assert_message_exception, eosio_assert_message_is( "invalid deposit contract" ) );
 
-   transfer_with_memo( name("mgr1"), ME, asset::from_string("110.0000 USD"), "proj1" );
+   transfer_with_memo( name("mgr1"), ME, asset::from_string("10.0000 USD"), "proj1" );
 
-   prj = get_project(N(proj1));
-   BOOST_REQUIRE(!!prj);
-   BOOST_REQUIRE_EQUAL(prj->name, N(proj1));
-   BOOST_REQUIRE_EQUAL(prj->need_approval, true);
-   BOOST_REQUIRE_EQUAL(prj->hourly_rate->quantity, asset::from_string("10.0000 USD"));
-   BOOST_REQUIRE_EQUAL(prj->hourly_rate->contract, N(eosio.token));
-   BOOST_REQUIRE_EQUAL(prj->balance->quantity, asset::from_string("110.0000 USD"));
-   BOOST_REQUIRE_EQUAL(prj->balance->contract, N(eosio.token));
+   // Approve
+   BOOST_REQUIRE_EQUAL( wasm_assert_msg("only managers can approve hours")
+   , approve(N(proj1), N(user1), N(user1),{}));
+
+   BOOST_REQUIRE_EQUAL( wasm_assert_msg("only managers can approve hours")
+   , approve(N(proj1), N(mgr2), N(user1),{}));
 
    BOOST_REQUIRE_EQUAL( success()
-     , claim(N(proj1), N(user1), {}));
+   , approve(N(proj1), N(mgr1), N(user1),1*3600));
+
+   BOOST_REQUIRE_EQUAL( asset::from_string("10.0000 USD"), get_balance(N(user1), symbol{4,"USD"}));
+   BOOST_REQUIRE_EQUAL( asset::from_string("0.0000 USD"), get_balance(ME, symbol{4,"USD"}));
 
    prjusr = get_project_user(uint64_t(0));
    BOOST_REQUIRE(!!prjusr);
    BOOST_REQUIRE_EQUAL(prjusr->id,0);
    BOOST_REQUIRE_EQUAL(prjusr->project,N(proj1));
    BOOST_REQUIRE_EQUAL(prjusr->user,N(user1));
-   BOOST_REQUIRE_EQUAL(prjusr->approved,0);
+   BOOST_REQUIRE_EQUAL(prjusr->pending, (5+7-1)*60*60);
+   BOOST_REQUIRE_EQUAL(prjusr->last_clock.slot, 0);
+
+   BOOST_REQUIRE_EQUAL( wasm_assert_msg("the user is not a member of the project")
+   , approve(N(proj1), N(mgr1), N(user3),0));
+
+   BOOST_REQUIRE_EQUAL( wasm_assert_msg("0 < approve <= pending")
+   , approve(N(proj1), N(mgr1), N(user1),0));
+
+   transfer_with_memo( name("mgr1"), ME, asset::from_string("110.0000 USD"), "proj1" );
+
+   BOOST_REQUIRE_EQUAL( success()
+   , approve(N(proj1), N(mgr1), N(user1), {}));
+
+   BOOST_REQUIRE_EQUAL( asset::from_string("120.0000 USD"), get_balance(N(user1), symbol{4,"USD"}));
+   BOOST_REQUIRE_EQUAL( asset::from_string("0.0000 USD"), get_balance(ME, symbol{4,"USD"}));
+
+   prjusr = get_project_user(uint64_t(0));
+   BOOST_REQUIRE(!!prjusr);
+   BOOST_REQUIRE_EQUAL(prjusr->id,0);
+   BOOST_REQUIRE_EQUAL(prjusr->project,N(proj1));
+   BOOST_REQUIRE_EQUAL(prjusr->user,N(user1));
    BOOST_REQUIRE_EQUAL(prjusr->pending, 0);
    BOOST_REQUIRE_EQUAL(prjusr->last_clock.slot, 0);
 
    prj = get_project(N(proj1));
    BOOST_REQUIRE(!!prj);
    BOOST_REQUIRE_EQUAL(prj->name, N(proj1));
-   BOOST_REQUIRE_EQUAL(prj->need_approval, true);
-   BOOST_REQUIRE_EQUAL(prj->hourly_rate->quantity, asset::from_string("10.0000 USD"));
-   BOOST_REQUIRE_EQUAL(prj->hourly_rate->contract, N(eosio.token));
-   BOOST_REQUIRE_EQUAL(prj->balance->quantity, asset::from_string("0.0000 USD"));
-   BOOST_REQUIRE_EQUAL(prj->balance->contract, N(eosio.token));
+   BOOST_REQUIRE_EQUAL(prj->hourly_rate.quantity, asset::from_string("10.0000 USD"));
+   BOOST_REQUIRE_EQUAL(prj->hourly_rate.contract, N(eosio.token));
+   BOOST_REQUIRE_EQUAL(prj->balance.quantity, asset::from_string("0.0000 USD"));
+   BOOST_REQUIRE_EQUAL(prj->balance.contract, N(eosio.token));
 
-   BOOST_REQUIRE_EQUAL( asset::from_string("120.0000 USD"), get_balance(N(user1), symbol{4,"USD"}));
-   BOOST_REQUIRE_EQUAL( asset::from_string("0.0000 USD"), get_balance(ME, symbol{4,"USD"}));
+   BOOST_REQUIRE_EQUAL( wasm_assert_msg("project not found")
+   , setuserrate(N(proj2), N(mgr1), N(user1), extended_asset(asset::from_string("10.0000 USD"), N(eosio.token))));
+
+   BOOST_REQUIRE_EQUAL( wasm_assert_msg("only managers can change user hourly rate")
+   , setuserrate(N(proj1), N(mgr2), N(user1), extended_asset(asset::from_string("10.0000 USD"), N(eosio.token))));
+
+   BOOST_REQUIRE_EQUAL( wasm_assert_msg("the user is not a member of the project")
+   , setuserrate(N(proj1), N(mgr1), N(user3), extended_asset(asset::from_string("10.0000 USD"), N(eosio.token))));
+
+   BOOST_REQUIRE_EQUAL( wasm_assert_msg("hourly rate asset/contract should be the same as project")
+   , setuserrate(N(proj1), N(mgr1), N(user1), extended_asset(asset::from_string("10.0000 USX"), N(eosio.token))));
+
+   BOOST_REQUIRE_EQUAL( wasm_assert_msg("hourly rate asset/contract should be the same as project")
+   , setuserrate(N(proj1), N(mgr1), N(user1), extended_asset(asset::from_string("10.0000 USD"), N(faketoken))));
+
+   BOOST_REQUIRE_EQUAL( success()
+   , setuserrate(N(proj1), N(mgr1), N(user1), extended_asset(asset::from_string("20.0000 USD"), N(eosio.token))));
+
+   BOOST_REQUIRE_EQUAL( success()
+      , clockin(N(proj1), N(user1)));
+
+   prjusr = get_project_user(uint64_t(0));
+   BOOST_REQUIRE(!!prjusr);
+   BOOST_REQUIRE_EQUAL(prjusr->id,0);
+   BOOST_REQUIRE_EQUAL(prjusr->project,N(proj1));
+   BOOST_REQUIRE_EQUAL(prjusr->user,N(user1));
+   BOOST_REQUIRE_EQUAL(prjusr->pending,0);
+   BOOST_REQUIRE_EQUAL(prjusr->last_clock.slot, block_timestamp_type(control->head_block_time()).slot);
+   
+   produce_block( fc::hours(2) );
+
+   BOOST_REQUIRE_EQUAL( success()
+      , clockout(N(proj1), N(user1), {}));
+
+   prjusr = get_project_user(uint64_t(0));
+   BOOST_REQUIRE(!!prjusr);
+   BOOST_REQUIRE_EQUAL(prjusr->id,0);
+   BOOST_REQUIRE_EQUAL(prjusr->project,N(proj1));
+   BOOST_REQUIRE_EQUAL(prjusr->user,N(user1));
+   BOOST_REQUIRE_EQUAL(prjusr->pending,2*3600);
+   BOOST_REQUIRE_EQUAL(prjusr->last_clock.slot, 0);
+
+   transfer_with_memo( name("mgr1"), ME, asset::from_string("100.0000 USD"), "proj1" );
+
+   BOOST_REQUIRE_EQUAL( wasm_assert_msg("only managers can decline hours")
+   , decline(N(proj1), N(mgr2), N(user1), 1*3600));
+
+   BOOST_REQUIRE_EQUAL( wasm_assert_msg("the user is not a member of the project")
+   , decline(N(proj1), N(mgr1), N(user3), 1*3600));
+
+   BOOST_REQUIRE_EQUAL( wasm_assert_msg("0 < decline <= pending")
+   , decline(N(proj1), N(mgr1), N(user1), 3*3600));
+
+   BOOST_REQUIRE_EQUAL( success()
+   , decline(N(proj1), N(mgr1), N(user1), 1*3600));
+
+   BOOST_REQUIRE_EQUAL( success()
+   , approve(N(proj1), N(mgr1), N(user1), 1*3600));
+
+   BOOST_REQUIRE_EQUAL( asset::from_string("140.0000 USD"), get_balance(N(user1), symbol{4,"USD"}));
+   BOOST_REQUIRE_EQUAL( asset::from_string("80.0000 USD"), get_balance(ME, symbol{4,"USD"}));
+
+   prjusr = get_project_user(uint64_t(0));
+   BOOST_REQUIRE(!!prjusr);
+   BOOST_REQUIRE_EQUAL(prjusr->id,0);
+   BOOST_REQUIRE_EQUAL(prjusr->project,N(proj1));
+   BOOST_REQUIRE_EQUAL(prjusr->user,N(user1));
+   BOOST_REQUIRE_EQUAL(prjusr->pending,0);
+   BOOST_REQUIRE_EQUAL(prjusr->last_clock.slot, 0);
+
 
 } FC_LOG_AND_RETHROW()
 

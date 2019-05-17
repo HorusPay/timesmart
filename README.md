@@ -73,7 +73,7 @@ cleos transfer eosio manager1 "10000.0000 EOS" -p eosio
 ### create a new project
 
 ```
-cleos push action horuspay create '{"project":"proj1", "owner":"owner1", "hourly_rate":{"quantity":"5.0000 EOS", "contract":"eosio.token"}}' -p owner1@active
+cleos push action horuspay create '{"project":"proj1", "owner":"owner1", "hourly_rate":{"quantity":"5.0000 EOS", "contract":"eosio.token"}}' -p horuspay@active
 ```
 
 ### add user to project
@@ -108,7 +108,7 @@ cleos push action horuspay clockout '["proj1", "user1", ""]' -p user1@active
 
 ### manager approves all pending hours
 ```shell
-cleos push action horuspay approve '{"project":"proj1", "manager":"manager1", "user":"user1", "hours":null}' -p manager1@active
+cleos push action horuspay approve '{"project":"proj1", "manager":"manager1", "user":"user1", "seconds":null}' -p manager1@active
 ```
 
 ### read user project table
@@ -116,37 +116,37 @@ cleos push action horuspay approve '{"project":"proj1", "manager":"manager1", "u
 cleos get table horuspay horuspay projectuser
 ```
 
-### user claim payment
-```shell
-cleos push action horuspay claim '{"project":"proj1", "user":"user1", "hours":null}' -p user1@active
-```
-
 ### user report specific amount of hours
+`(units in seconds 30hs = 30*3600 = 108000)`
 ```shell
-cleos push action horuspay addtime '["proj1", "user1", 30, ""]' -p user1@active
+cleos push action horuspay addtime '{"project":"proj1", "user":"user1", "seconds":108000, "description":null, "manager":null}' -p user1@active
 ```
 
 ### manager approves all pending hours
 ```shell
-cleos push action horuspay approve '{"project":"proj1", "manager":"manager1", "user":"user1", "hours":null}' -p manager1@active
+cleos push action horuspay approve '{"project":"proj1", "manager":"manager1", "user":"user1", "seconds":null}' -p manager1@active
 ```
 
-### user claim payment
+### manager add specific amount of hours
+`(units in seconds 10hs = 10*3600 = 36000)`
 ```shell
-cleos push action horuspay claim '{"project":"proj1", "user":"user1", "hours":null}' -p user1@active
+cleos push action horuspay addtime '{"project":"proj1", "user":"user1", "seconds":36000, "description":"fixing", "manager":"manager1"}' -p manager1@active
 ```
 
 ### user report specific amount of hours
+`(units in seconds 50hs = 50*3600 = 180000)`
 ```shell
-cleos push action horuspay addtime '["proj1", "user1", 50, ""]' -p user1@active
+cleos push action horuspay addtime '{"project":"proj1", "user":"user1", "seconds":180000, "description":null, "manager":null}' -p user1@active
 ```
 
-### manager approves 10 hours
+### manager decline 40 hours
+`(units in seconds 40hs = 40*3600 = 144000)`
 ```shell
-cleos push action horuspay approve '{"project":"proj1", "manager":"manager1", "user":"user1", "hours":10}' -p manager1@active
+cleos push action horuspay decline '{"project":"proj1", "manager":"manager1", "user":"user1", "seconds":144000}' -p manager1@active
 ```
 
-### user claim payment
+### manager approves 20 hours
+`(units in seconds 20hs = 20*3600 = 72000)`
 ```shell
-cleos push action horuspay claim '{"project":"proj1", "user":"user1", "hours":null}' -p user1@active
+cleos push action horuspay approve '{"project":"proj1", "manager":"manager1", "user":"user1", "seconds":72000}' -p manager1@active
 ```

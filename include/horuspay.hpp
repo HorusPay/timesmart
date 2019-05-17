@@ -31,27 +31,26 @@ class [[eosio::contract]] horuspay : public eosio::contract {
       using contract::contract;
 
    struct [[eosio::table]] project {
-      name                     name;
-      bool                     need_approval = true;
-      optional<extended_asset> hourly_rate;
-      optional<extended_asset> balance;
+      name           name;
+      extended_asset hourly_rate;
+      extended_asset balance;
 
       uint64_t primary_key() const {
          return name.value;
       }
 
-      EOSLIB_SERIALIZE( project, (name)(need_approval)(hourly_rate)(balance))
+      EOSLIB_SERIALIZE( project, (name)(hourly_rate)(balance))
    };
    typedef multi_index< "project"_n, project >  project_table;
 
 
    struct [[eosio::table]] project_user {
-      uint64_t          id;
-      name              project;
-      name              user;
-      int64_t           approved;
-      int64_t           pending;
-      block_timestamp   last_clock;
+      uint64_t                 id;
+      name                     project;
+      name                     user;
+      int64_t                  pending;
+      extended_asset           hourly_rate;
+      block_timestamp          last_clock;
 
       uint64_t primary_key() const {
          return id;
@@ -61,7 +60,7 @@ class [[eosio::contract]] horuspay : public eosio::contract {
          return compute_key(user.value, project.value);
       }
 
-      EOSLIB_SERIALIZE( project_user, (id)(project)(user)(approved)(pending)(last_clock))
+      EOSLIB_SERIALIZE( project_user, (id)(project)(user)(pending)(hourly_rate)(last_clock))
    };
    typedef eosio::multi_index< "projectuser"_n, project_user,
             eosio::indexed_by<"byusr"_n, const_mem_fun<project_user, uint128_t, &project_user::by_project_user>>
@@ -90,7 +89,7 @@ class [[eosio::contract]] horuspay : public eosio::contract {
 
 
       [[eosio::action]]
-      void create(name project, name owner, optional<extended_asset> hourly_rate);
+      void create(name project, name owner, extended_asset hourly_rate);
 
       [[eosio::action]]
       void adduser(name project, name manager, name user);
@@ -98,27 +97,30 @@ class [[eosio::contract]] horuspay : public eosio::contract {
       [[eosio::action]]
       void removeuser(name project, name manager, name user);
 
-      [[eosio::action]] 
+      [[eosio::action]]
       void addmanager(name project, name owner, name manager);
 
-      [[eosio::action]] 
+      [[eosio::action]]
       void rmvmanager(name project, name owner, name manager);
 
-      [[eosio::action]] 
+      [[eosio::action]]
       void clockin(name project, name user);
 
-      [[eosio::action]] 
+      [[eosio::action]]
       void clockout(name project, name user, optional<string> description);
 
-      [[eosio::action]] 
-      void addtime(name project, name user, uint64_t hours, optional<string> description);
+      [[eosio::action]]
+      void addtime(name project, name user, uint64_t seconds, optional<string> description, optional<name> manager);
 
-      [[eosio::action]] 
-      void approve(name project, name manager, name user, optional<int64_t> hours);
+      [[eosio::action]]
+      void approve(name project, name manager, name user, optional<int64_t> seconds);
 
-      [[eosio::action]] 
-      void claim(name project, name user, optional<int64_t> hours);
-      
+      [[eosio::action]]
+      void decline(name project, name manager, name user, int64_t seconds);
+
+      [[eosio::action]]
+      void setuserrate(name project, name manager, name user, extended_asset hourly_rate);
+
       //HACK: https://github.com/EOSIO/eosio.cdt/issues/497
       [[eosio::on_notify("eosio.token::transfer")]]
       void on_eosio_token_transfer( name from, name to, asset quantity, const std::string& memo ) {

@@ -3,15 +3,13 @@
 
 namespace horuspay {
 
-void horuspay::create(name project, name owner, optional<extended_asset> hourly_rate) {
+void horuspay::create(name project, name owner, extended_asset hourly_rate) {
 
-   require_auth(owner);
+   require_auth(_self);
 
-   if(hourly_rate) {
-      eosio::check(hourly_rate->quantity.amount > 0, "Hourly rate must be positive");
-      eosio::check(hourly_rate->quantity.symbol.is_valid(), "Invalid hourly rate symbol");
-      eosio::check(eosio::is_account(hourly_rate->contract), "Invalid token account");
-   }
+   eosio::check(hourly_rate.quantity.amount > 0, "Hourly rate must be positive");
+   eosio::check(hourly_rate.quantity.symbol.is_valid(), "Invalid hourly rate symbol");
+   eosio::check(eosio::is_account(hourly_rate.contract), "Invalid token account");
 
    project_table _projects(_self, _self.value);
 
@@ -22,10 +20,7 @@ void horuspay::create(name project, name owner, optional<extended_asset> hourly_
       p.name        = project;
       p.hourly_rate = hourly_rate;
       p.balance     = hourly_rate;
-
-      if(p.balance) {
-        p.balance->quantity.amount = 0;
-      }
+      p.balance.quantity.amount = 0;
    });
 
    project_manager_table _project_managers(_self, _self.value);
@@ -55,19 +50,22 @@ void horuspay::on_transfer( name from, name to, asset quantity, const std::strin
    eosio::check(pa.project == project, "internal error");
 
    //Valiate received token symbol with the one configured for the project
-   eosio::check(quantity.symbol == prj->balance->quantity.symbol, "invalid deposit token");
-   eosio::check(get_first_receiver() == prj->balance->contract, "invalid deposit contract");
+   eosio::check(quantity.symbol == prj->balance.quantity.symbol, "invalid deposit token");
+   eosio::check(get_first_receiver() == prj->balance.contract, "invalid deposit contract");
 
    //Update project total balance
    _projects.modify(prj, same_payer, [&](auto& p){
-      p.balance->quantity += quantity;
+      p.balance.quantity += quantity;
    });
 }
 
 void horuspay::adduser(name project, name manager, name user) {
 
    require_auth(manager);
-   
+
+   project_table _projects(_self, _self.value);
+   const auto& prj = _projects.get(project.value, "project not found");
+
    project_manager_table _project_managers(_self, _self.value);
    auto projmanager_inx = _project_managers.get_index<"bymgr"_n>();
    auto& pa = projmanager_inx.get(compute_key(manager.value, project.value), "only project manager can add users");
@@ -79,12 +77,12 @@ void horuspay::adduser(name project, name manager, name user) {
    eosio::check(eosio::is_account(user), "user must be a registered account");
 
    _project_users.emplace(_self, [&](auto& u){
-      u.id         = _project_users.available_primary_key();
-      u.project    = project;
-      u.user       = user;
-      u.approved   = 0;
-      u.pending    = 0;
-      u.last_clock = decltype(u.last_clock)(0);
+      u.id          = _project_users.available_primary_key();
+      u.project     = project;
+      u.user        = user;
+      u.pending     = 0;
+      u.hourly_rate = prj.hourly_rate;
+      u.last_clock  = decltype(u.last_clock)(0);
    });
 }
 
@@ -174,11 +172,18 @@ void horuspay::clockout(name project, name user, optional<string> description) {
    });
 }
 
-void horuspay::addtime(name project, name user, uint64_t hours, optional<string> description) {
-
-   require_auth(user);
+void horuspay::addtime(name project, name user, uint64_t seconds, optional<string> description, optional<name> manager) {
    
-   eosio::check(hours > 0, "hours must be positive");
+   eosio::check(seconds > 0, "seconds must be positive");
+
+   if(manager) {
+      require_auth(*manager);
+      project_manager_table _project_managers(_self, _self.value);
+      auto projmanager_inx = _project_managers.get_index<"bymgr"_n>();
+      projmanager_inx.get(compute_key(manager->value, project.value), "not a manager of the project");
+   } else {
+      require_auth(user);
+   }
 
    project_user_table _project_users(_self, _self.value);
    auto projuser_inx = _project_users.get_index<"byusr"_n>();
@@ -186,80 +191,95 @@ void horuspay::addtime(name project, name user, uint64_t hours, optional<string>
    eosio::check(pu_itr != projuser_inx.end(), "the user is not a member of the project");
 
    _project_users.modify(*pu_itr, same_payer, [&](auto& pu){
-      pu.pending += eosio::time_point(eosio::hours(hours)).sec_since_epoch();
+      pu.pending += seconds;
    });
 }
 
-void horuspay::approve(name project, name manager, name user, optional<int64_t> hours) {
+void horuspay::approve(name project, name manager, name user, optional<int64_t> seconds) {
+
+   require_auth(manager);
+
+   project_table _projects(_self, _self.value);
+   const auto& prj = _projects.get(project.value, "project not found");
+
+   project_manager_table _project_managers(_self, _self.value);
+   auto projmanager_inx = _project_managers.get_index<"bymgr"_n>();
+   projmanager_inx.get(compute_key(manager.value, project.value), "only managers can approve hours");
+
+   project_user_table _project_users(_self, _self.value);
+   auto projuser_inx = _project_users.get_index<"byusr"_n>();
+   auto pu = projuser_inx.find(compute_key(user.value, project.value));
+   eosio::check(pu != projuser_inx.end(), "the user is not a member of the project");
+
+   int64_t secs_to_approve = pu->pending;
+   if(seconds) {
+      eosio::check(seconds > 0 && seconds <= secs_to_approve, "0 < approve <= pending");
+      secs_to_approve = *seconds;
+   }
+
+   projuser_inx.modify(pu, same_payer, [&](auto& p){
+      p.pending -= secs_to_approve;
+   });
+
+   double total_hours = double(secs_to_approve)/double(3600);
+
+   auto q = pu->hourly_rate.quantity;
+   auto payment = asset(int64_t(double(q.amount)*total_hours), q.symbol);
+   eosio::check(prj.balance.quantity >= payment, "not enough funds");
+
+   {
+      std::string memo("horuspay");
+      transfer_action transfer_act{ prj.balance.contract, { _self, active_permission } };
+      transfer_act.send( _self, user, payment, memo );
+   }
+
+   _projects.modify(prj, same_payer, [&](auto& p) {
+      p.balance.quantity -= payment;
+   });
+
+}
+
+void horuspay::decline(name project, name manager, name user, int64_t seconds) {
    
    require_auth(manager);
 
    project_manager_table _project_managers(_self, _self.value);
    auto projmanager_inx = _project_managers.get_index<"bymgr"_n>();
-   auto pa_itr = projmanager_inx.find(compute_key(manager.value, project.value));
-   eosio::check(pa_itr != projmanager_inx.end(), "only managers can approve hours");
+   projmanager_inx.get(compute_key(manager.value, project.value), "only managers can decline hours");
 
    project_user_table _project_users(_self, _self.value);
    auto projuser_inx = _project_users.get_index<"byusr"_n>();
-   auto pu_itr = projuser_inx.find(compute_key(user.value, project.value));
-   eosio::check(pu_itr != projuser_inx.end(), "the user is not a member of the project");
+   auto pu = projuser_inx.find(compute_key(user.value, project.value));
+   eosio::check(pu != projuser_inx.end(), "the user is not a member of the project");
 
-   int64_t secs_to_approve = pu_itr->pending;
-   if(hours) {
-      auto secs = eosio::time_point(eosio::hours(*hours)).sec_since_epoch();
-      eosio::check(secs > 0 && secs <= secs_to_approve, "0 < approve <= pending");
-      secs_to_approve = secs;
-   }
+   eosio::check(seconds > 0 && seconds <= pu->pending, "0 < decline <= pending");
    
-   projuser_inx.modify(pu_itr, same_payer, [&](auto& pu){
-      pu.approved += secs_to_approve;
-      pu.pending  -= secs_to_approve;
-      if(pu.pending < 0) pu.pending = 0;
+   projuser_inx.modify(pu, same_payer, [&](auto& p){
+      p.pending  -= seconds;
    });
 }
 
-void horuspay::claim(name project, name user, optional<int64_t> hours) {
-   
-   require_auth(user);
+void horuspay::setuserrate(name project, name manager, name user, extended_asset hourly_rate) {
 
+   require_auth(manager);
    project_table _projects(_self, _self.value);
-   const auto& prj = _projects.get(project.value, "claim project not found");
+   const auto& prj = _projects.get(project.value, "project not found");
 
-   eosio::check(prj.hourly_rate && prj.balance, "unable to claim");
+   eosio::check(prj.hourly_rate.contract == hourly_rate.contract &&
+      prj.hourly_rate.quantity.symbol == hourly_rate.quantity.symbol, "hourly rate asset/contract should be the same as project");
+      
+   project_manager_table _project_managers(_self, _self.value);
+   auto projmanager_inx = _project_managers.get_index<"bymgr"_n>();
+   projmanager_inx.get(compute_key(manager.value, project.value), "only managers can change user hourly rate");
 
    project_user_table _project_users(_self, _self.value);
    auto projuser_inx = _project_users.get_index<"byusr"_n>();
-   auto pu_itr = projuser_inx.find(compute_key(user.value, project.value));
-   eosio::check(pu_itr != projuser_inx.end(), "the user is not a member of the project");
+   auto pu = projuser_inx.find(compute_key(user.value, project.value));
+   eosio::check(pu != projuser_inx.end(), "the user is not a member of the project");
 
-   int64_t secs_to_claim = pu_itr->approved;
-   if(hours) {
-      auto secs = eosio::time_point(eosio::hours(*hours)).sec_since_epoch();
-      eosio::check(secs > 0 && secs <= secs_to_claim, "0 < claim <= approved");
-      secs_to_claim = secs;
-   }
-
-   double total_hours = double(secs_to_claim)/double(3600);
-
-   auto q = prj.hourly_rate->quantity;
-   auto payment = asset(int64_t(double(q.amount)*total_hours), q.symbol);
-   eosio::check(prj.balance->quantity >= payment, "not enough funds");
-
-   
-   {
-      std::string memo("horuspay");
-      transfer_action transfer_act{ prj.balance->contract, { _self, active_permission } };
-      transfer_act.send( _self, user, payment, memo );
-   }
-
-   projuser_inx.modify(pu_itr, same_payer, [&](auto& pu){
-      pu.approved -= secs_to_claim;
+   projuser_inx.modify(pu, same_payer, [&](auto& p){
+      p.hourly_rate = hourly_rate;
    });
-
-   _projects.modify(prj, same_payer, [&](auto& p) {
-      p.balance->quantity -= payment;
-   });
-
 }
 
 }
